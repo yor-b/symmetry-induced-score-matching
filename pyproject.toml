@@ -53,5 +53,3 @@ include = ["sism*"]
 python_version = "3.10"
 ignore_missing_imports = true
 
-[project]
-license = {text = "Apache-2.0"}
