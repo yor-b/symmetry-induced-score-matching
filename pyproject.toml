@@ -11,7 +11,7 @@ authors = [
     {name = "Marco Bertolini", email = "marco.bertolini@pfizer.com"},
     {name = "Tuan Le", email = "tuan.le@pfizer.com"},
 ]
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
