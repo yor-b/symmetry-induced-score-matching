@@ -187,10 +187,13 @@ class QM9Dataset(InMemoryDataset):
         n_test = int(0.1 * n_samples)
         n_val = n_samples - (n_train + n_test)
 
-        # Shuffle dataset with df.sample, then split
-        train, val, test = np.split(
-            dataset.sample(frac=1, random_state=42), [n_train, n_val + n_train]
-        )
+        # Shuffle dataset with df.sample, then split.
+        # Avoid np.split here because newer NumPy/pandas may return ndarray objects,
+        # which do not have DataFrame.to_csv().
+        dataset = dataset.sample(frac=1, random_state=42).reset_index(drop=True)
+        train = dataset.iloc[:n_train]
+        val = dataset.iloc[n_train:n_train + n_val]
+        test = dataset.iloc[n_train + n_val:]
 
         train.to_csv(os.path.join(self.raw_dir, "train.csv"))
         val.to_csv(os.path.join(self.raw_dir, "val.csv"))
