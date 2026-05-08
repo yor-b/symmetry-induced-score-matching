@@ -4,7 +4,7 @@ atom_feat_dim: 16
 batch_size: 128
 conf: null
 cutoff: 5.0
-dataset_root: /dataset_path/
+dataset_root: ~/datasets/qm9/
 detect_anomaly: false
 edge_feat_dim: 5
 eps_min: 0.001
@@ -27,7 +27,7 @@ num_rbfs: 20
 num_workers: 3
 precision: 32
 remove_hs: false
-save_dir: /path/to_save/
+save_dir: ~/sism_runs/qm9/gsm/
 sdim: 128
 seed: 42
 timesteps: 100

@@ -1,4 +1,4 @@
-name: sism
+name: sism-mnist-se2
 channels:
   - conda-forge
   - defaults

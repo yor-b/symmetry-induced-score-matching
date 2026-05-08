@@ -14,8 +14,9 @@ import numpy as np
 import torch.nn.functional as F
 
 from sism.mnist.train_gsm import (
-    rotate_image,
-    ScoreNet,
+    # rotate_image,
+    affine_image,
+    ScoreNet
 )
 from sism.mnist.mnist_data import MNISTDataModule
 
@@ -66,7 +67,8 @@ class MNISTTester:
             transform = transforms.Compose([transforms.Normalize((0.1307,), (0.3081,))])
             score_net = ScoreNet(transform=transform).to(self.device)
         else:
-            in_dim = 784
+            # in_dim = 784
+            in_dim=1600
             hidden_dim = 32
             score_net = nn.Sequential(
                 nn.Linear(in_dim + 1, hidden_dim),
@@ -75,7 +77,8 @@ class MNISTTester:
                 nn.Linear(hidden_dim, hidden_dim),
                 nn.BatchNorm1d(hidden_dim),
                 nn.SiLU(),
-                nn.Linear(hidden_dim, 1),
+                # nn.Linear(hidden_dim, 1),
+                nn.Linear(hidden_dim,3)
             ).to(self.device)
 
         # Load model weights
@@ -112,21 +115,63 @@ class MNISTTester:
         img_0 = torch.stack([class_ids[i][self.config.seed] for i in range(10)])
 
         # Generate random rotation angles
+        # angle_parameter = torch.randn_like(torch.empty(10, dtype=torch.float))
+        # lambda_T = angle_parameter * (180 / 2)
+        # lambda_T = torch.where(
+        #     lambda_T.abs() < 180 / 8, torch.ones_like(lambda_T) * 180 / 8, lambda_T
+        # )
+
         angle_parameter = torch.randn_like(torch.empty(10, dtype=torch.float))
+        tx_parameter = torch.randn_like(angle_parameter)
+        ty_parameter = torch.randn_like(angle_parameter)
+
         lambda_T = angle_parameter * (180 / 2)
         lambda_T = torch.where(
-            lambda_T.abs() < 180 / 8, torch.ones_like(lambda_T) * 180 / 8, lambda_T
+            lambda_T.abs() < 180 / 8,
+            torch.ones_like(lambda_T) * 180 / 8,
+            lambda_T
+        )
+
+        tx_T = tx_parameter * 8.0
+        ty_T = ty_parameter * 8.0
+
+        min_shift = 4.0
+
+        tx_T = torch.where(
+            tx_T.abs() < min_shift,
+            torch.sign(tx_T + 1e-6) * min_shift,
+            tx_T,
+        )
+
+        ty_T = torch.where(
+            ty_T.abs() < min_shift,
+            torch.sign(ty_T + 1e-6) * min_shift,
+            ty_T,
         )
 
         # Apply rotations
+        # img_1 = torch.stack(
+        #     [
+        #         ToTensor()(rotate_image(ToPILImage()(image), angle))
+        #         for image, angle in zip(img_0, lambda_T)
+        #     ]
+        # ).squeeze()
         img_1 = torch.stack(
             [
-                ToTensor()(rotate_image(ToPILImage()(image), angle))
-                for image, angle in zip(img_0, lambda_T)
+                ToTensor()(
+                    affine_image(
+                        ToPILImage()(image),
+                        angle,
+                        tx,
+                        ty,
+                    )
+                )
+                for image, angle, tx, ty in zip(img_0, lambda_T, tx_T, ty_T)
             ]
         ).squeeze()
 
-        return img_0, img_1, lambda_T
+        # return img_0, img_1, lambda_T
+        return img_0, img_1, torch.stack([lambda_T, tx_T, ty_T], dim=1)
 
     def sample_gsm(
         self,
@@ -150,7 +195,9 @@ class MNISTTester:
             iterator = tqdm(iterator, total=self.config.T, desc="Sampling")
 
         # Since the SDE is simulated, we can just accumulate the infinitesimal changes in rotation and apply a rotation at the final end
-        update_thetas_one_step = torch.zeros((num_samples,), device=self.device)
+        # update_params_one_step = torch.zeros((num_samples,), device=self.device)
+        update_params_one_step = torch.zeros((num_samples, 3), device=self.device)
+
         cnt = 0
         trajectory = []
 
@@ -161,29 +208,51 @@ class MNISTTester:
                 t = torch.tensor([t] * num_samples)
                 temb = (t / self.config.T).unsqueeze(-1).to(self.device)
                 betas = compute_beta(temb).squeeze()
-                scores = self.score_net(img_t.unsqueeze(1), temb).squeeze()
 
-                z_t = torch.randn((num_samples,), device=self.device)
-                update_thetas = -betas * scores * Delta_t
-                update_thetas += torch.sqrt(betas * abs(Delta_t)) * z_t
-                update_thetas_one_step += update_thetas
+                # scores = self.score_net(img_t.unsqueeze(1), temb).squeeze()
+
+                # z_t = torch.randn((num_samples,), device=self.device)
+                # update_thetas = -betas * scores * Delta_t
+                # update_thetas += torch.sqrt(betas * abs(Delta_t)) * z_t
+                # update_params_one_step += update_thetas
+
+
+                scores = self.score_net(img_t.unsqueeze(1), temb)
+                z_t = torch.randn((num_samples, 3), device=self.device)
+                betas = betas.unsqueeze(1)
+                update_params = -betas * scores * Delta_t
+                update_params += torch.sqrt(betas * abs(Delta_t)) * z_t
+                update_params_one_step += update_params
 
                 # recursive
                 if recursive:
+                    # img_t = torch.stack(
+                    #     [
+                    #         ToTensor()(rotate_image(ToPILImage()(image), theta))
+                    #         for image, theta in zip(img_t, update_thetas)
+                    #     ]
+                    # ).squeeze().to(self.device)
                     img_t = torch.stack(
                         [
-                            ToTensor()(rotate_image(ToPILImage()(image), theta))
-                            for image, theta in zip(img_t, update_thetas)
+                            ToTensor()(affine_image(ToPILImage()(image), p[0], p[1], p[2]))
+                            for image, p in zip(img_t, update_params)
                         ]
                     ).squeeze().to(self.device)
                 else:
                     # accumulate angle change and apply on original prior image 1
+                    # img_t = torch.stack(
+                    #     [
+                    #         ToTensor()(rotate_image(ToPILImage()(image), theta))
+                    #         for image, theta in zip(img_1, update_params_one_step)
+                    #     ]
+                    # ).squeeze().to(self.device)
                     img_t = torch.stack(
                         [
-                            ToTensor()(rotate_image(ToPILImage()(image), theta))
-                            for image, theta in zip(img_1, update_thetas_one_step)
+                            ToTensor()(affine_image(ToPILImage()(image), p[0], p[1], p[2]))
+                            for image, p in zip(img_1, update_params_one_step)
                         ]
                     ).squeeze().to(self.device)
+
 
                 if save_trajectory:
                     trajectory.append(img_t.cpu().numpy())
@@ -195,10 +264,17 @@ class MNISTTester:
                     break
 
         # Final rotation based on accumulated theta
+        # img_0_pred_one_step = torch.stack(
+        #     [
+        #         ToTensor()(rotate_image(ToPILImage()(image), theta))
+        #         for image, theta in zip(img_1, update_params_one_step)
+        #     ]
+        # ).squeeze()
+
         img_0_pred_one_step = torch.stack(
             [
-                ToTensor()(rotate_image(ToPILImage()(image), theta))
-                for image, theta in zip(img_1, update_thetas_one_step)
+                ToTensor()(affine_image(ToPILImage()(image), p[0], p[1], p[2]))
+                for image, p in zip(img_1, update_params_one_step)
             ]
         ).squeeze()
         out = {
@@ -274,27 +350,91 @@ class MNISTTester:
         mnist_subset = {c: torch.cat(v[:num_samples]) for c, v in class_ids.items()}
         return mnist_subset
 
+    # def process_batch(self, img_0, verbose=True):
+    #     num_samples = len(img_0)
+    #     # Generate random rotation angles
+    #     angle_parameter = torch.randn_like(torch.empty(num_samples, dtype=torch.float))
+    #     lambda_T = angle_parameter * (180 / 2)
+    #     lambda_T = torch.where(
+    #         lambda_T.abs() < 180 / 8, torch.ones_like(lambda_T) * 180 / 8, lambda_T
+    #     )
+
+    #     # Apply rotations
+    #     img_1 = torch.stack(
+    #         [
+    #             ToTensor()(rotate_image(ToPILImage()(image), angle))
+    #             for image, angle in zip(img_0, lambda_T)
+    #         ]
+    #     ).squeeze()
+
+    #     output = self.sample_gsm(img_1, img_0, verbose)
+    #     # overwrite the img key to img_one_step
+    #     output["img"] = output["img_one_step"]
+    #     output["variances"] = lambda_T
+    #     return output
+    
     def process_batch(self, img_0, verbose=True):
         num_samples = len(img_0)
-        # Generate random rotation angles
-        angle_parameter = torch.randn_like(torch.empty(num_samples, dtype=torch.float))
+
+        angle_parameter = torch.randn_like(
+            torch.empty(num_samples, dtype=torch.float)
+        )
+        tx_parameter = torch.randn_like(angle_parameter)
+        ty_parameter = torch.randn_like(angle_parameter)
+
         lambda_T = angle_parameter * (180 / 2)
+
         lambda_T = torch.where(
-            lambda_T.abs() < 180 / 8, torch.ones_like(lambda_T) * 180 / 8, lambda_T
+            lambda_T.abs() < 180 / 8,
+            torch.ones_like(lambda_T) * 180 / 8,
+            lambda_T,
         )
 
-        # Apply rotations
+        tx_T = tx_parameter * 8.0
+        ty_T = ty_parameter * 8.0
+
+        min_shift = 4.0
+
+        tx_T = torch.where(
+            tx_T.abs() < min_shift,
+            torch.sign(tx_T + 1e-6) * min_shift,
+            tx_T,
+        )
+
+        ty_T = torch.where(
+            ty_T.abs() < min_shift,
+            torch.sign(ty_T + 1e-6) * min_shift,
+            ty_T,
+        )
+
         img_1 = torch.stack(
             [
-                ToTensor()(rotate_image(ToPILImage()(image), angle))
-                for image, angle in zip(img_0, lambda_T)
+                ToTensor()(
+                    affine_image(
+                        ToPILImage()(image),
+                        angle,
+                        tx,
+                        ty,
+                    )
+                )
+                for image, angle, tx, ty in zip(
+                    img_0,
+                    lambda_T,
+                    tx_T,
+                    ty_T,
+                )
             ]
         ).squeeze()
 
         output = self.sample_gsm(img_1, img_0, verbose)
-        # overwrite the img key to img_one_step
+
         output["img"] = output["img_one_step"]
-        output["variances"] = lambda_T
+
+        output["variances"] = torch.stack(
+            [lambda_T, tx_T, ty_T],
+            dim=1,
+        )
+
         return output
 
     def run_test(self, save_path: Optional[str] = None) -> Dict[str, torch.Tensor]:

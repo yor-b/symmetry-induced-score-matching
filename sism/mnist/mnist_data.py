@@ -43,9 +43,11 @@ class MNISTDataModule(LightningDataModule):
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.transform = transforms.Compose([
-             transforms.ToTensor(),
+            transforms.Pad(6),
+            transforms.ToTensor(),
         #     transforms.Normalize((0.1307,), (0.3081,))
         ])
+        # print(self.transform)
         self.num_workers = num_workers
 
         if affine:

@@ -22,9 +22,19 @@ def rotate_transform_generate(angle):
     return transforms.RandomAffine(degrees=(-angle, angle))
 
 
-def rotate_image(image, angle):
-    return F.rotate(image, float(angle), interpolation=InterpolationMode.BILINEAR)
+# def rotate_image(image, angle):
+#     return F.rotate(image, float(angle), interpolation=InterpolationMode.BILINEAR)
 
+def affine_image(image, angle, tx, ty):
+    return F.affine(
+        image,
+        angle=float(angle),
+        translate=(int(tx), int(ty)),
+        scale=1.0,
+        shear=0.0,
+        interpolation=InterpolationMode.BILINEAR,
+        fill=0,
+    )
 
 def get_diffusion_coefficients(T, kind="linear-time", alpha_clip_min=0.001):
     if kind == "linear-time":
@@ -81,13 +91,15 @@ class ScoreNet(nn.Module):
         )
 
         self.dense_layers = nn.Sequential(
-            nn.Linear(3 * 3 * 32 + 1, 32),
+            # nn.Linear(3 * 3 * 32 + 1, 32),
+            nn.Linear(5 * 5 * 32 + 1, 32),
             nn.BatchNorm1d(32),
             nn.ReLU(),
             nn.Linear(32, 16),
             nn.BatchNorm1d(16),
             nn.ReLU(),
-            nn.Linear(16, 1),
+            # nn.Linear(16, 1),
+            nn.Linear(16, 3)
         )
 
     def forward(self, x, t):
@@ -163,6 +175,9 @@ if __name__ == "__main__":
             for i, batch in enumerate(dataloader):
                 t = torch.randint(low=1, high=T + 1, size=(len(batch[0]),))
                 images = batch[0]
+                # print("images shape:", images.shape)
+                # raise SystemExit
+
                 temb = (t / T).unsqueeze(-1)
                 variance = get_sigma(temb).squeeze()
                 optimizer_grad.zero_grad()
@@ -176,10 +191,25 @@ if __name__ == "__main__":
                 )
                 angles = angle_parameter * variance.squeeze()
 
+
+                tx_parameter = torch.randn_like(angle_parameter)
+                ty_parameter = torch.randn_like(angle_parameter)
+
+                translation_scale = 4.0
+
+                txs = tx_parameter * translation_scale * variance.squeeze()
+                tys = ty_parameter * translation_scale * variance.squeeze()
+                # img_perturbed = torch.stack(
+                #     [
+                #         ToTensor()(rotate_image(ToPILImage()(image), angle))
+                #         for image, angle in zip(images, angles)
+                #     ]
+                # )
+
                 img_perturbed = torch.stack(
                     [
-                        ToTensor()(rotate_image(ToPILImage()(image), angle))
-                        for image, angle in zip(images, angles)
+                        ToTensor()(affine_image(ToPILImage()(image), angle, tx, ty))
+                        for image, angle, tx, ty in zip(images, angles, txs, tys)
                     ]
                 )
 
@@ -209,11 +239,22 @@ if __name__ == "__main__":
                         img_perturbed.size(0), -1
                     ).squeeze()
                     input_data = torch.cat([img_perturbed_lin, temb], dim=1)
-                    score = score_net(input_data).squeeze()
+                    # score = score_net(input_data).squeeze()
+                    score = score_net(input_data)
                 else:
-                    score = score_net(img_perturbed, temb).squeeze()
+                    # score = score_net(img_perturbed, temb).squeeze()
+                    score = score_net(img_perturbed, temb)
 
-                target = -angle_parameter.to(device)  # / variance
+                # target = -angle_parameter.to(device)  # / variance
+                target = torch.stack(
+                    [
+                        -angle_parameter,
+                        -tx_parameter,
+                        -ty_parameter,
+                    ],
+                    dim=1,
+                ).to(device)
+
                 # We do not need the sum since the targets and 1-dimensional. This way we were summating over the batch
                 loss_scores = (score - target).pow(2)  # .sum(-1)
                 loss = loss_scores.mean()
@@ -250,11 +291,21 @@ if __name__ == "__main__":
                     )
                 ):
                     axs[0, i].imshow(image.squeeze(), cmap="gray")
-                    axs[0, i].set_title(f"t={ts:.2f}, Angle: {angle:.2f}")
+                    # axs[0, i].set_title(f"t={ts:.2f}, Angle: {angle:.2f}")
+                    axs[0, i].set_title(
+                        f"t={ts:.2f}, "
+                        f"a={angle:.1f}, "
+                        f"tx={txs[i]:.1f}, "
+                        f"ty={tys[i]:.1f}"
+                    )
                     axs[0, i].axis("off")
 
                     axs[1, i].imshow(perturbed_image.squeeze(), cmap="gray")
-                    axs[1, i].set_title(f"Target: {target:.2f}, Score: {sc:.2f}")
+                    # axs[1, i].set_title(f"Target: {target:.2f}, Score: {sc:.2f}")
+                    axs[1, i].set_title(
+                        f"Target: {target.detach().cpu().numpy().round(2)}, "
+                        f"Score: {sc.detach().cpu().numpy().round(2)}"
+                    )
                     axs[1, i].axis("off")
 
                 # Increase the vertical space between plots
